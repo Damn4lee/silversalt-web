@@ -6,6 +6,7 @@ const STORE_NAME = 'photos';
 const GITHUB_CONFIG_KEY = 'aesthetic_vault_github_config';
 const UI_CONFIG_KEY = 'aesthetic_vault_ui_config_v2';
 const SEEDED_KEY = 'aesthetic_vault_seeded_v2';
+const INSTANT_UPLOAD_KEY = 'aesthetic_vault_instant_upload';
 
 type StudyVariant =
   | 'chiaroscuro-window'
@@ -384,6 +385,74 @@ export function saveUiConfig(config: UiAestheticConfig): void {
   localStorage.setItem(UI_CONFIG_KEY, JSON.stringify(config));
 }
 
+export function loadInstantUploadPref(): boolean {
+  try {
+    return localStorage.getItem(INSTANT_UPLOAD_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function saveInstantUploadPref(enabled: boolean): void {
+  try {
+    localStorage.setItem(INSTANT_UPLOAD_KEY, String(enabled));
+  } catch {
+    // ignore
+  }
+}
+
+function formatGitHubApiError(status: number, detail: string, action: string): string {
+  if (status === 401) {
+    return `${action}失败 (401)：GitHub Token 无效或已过期，请重新生成并保存。`;
+  }
+  if (status === 403) {
+    return `${action}失败 (403)：Token 权限不足，请确认 Fine-grained Token 已选中目标仓库并将 Contents 设为 Read and write。`;
+  }
+  if (status === 404) {
+    return `${action}失败 (404)：找不到仓库或分支，请检查 Owner、仓库名与分支名是否正确。`;
+  }
+  if (status === 409) {
+    return `${action}失败 (409)：云端文件版本冲突，请重试。`;
+  }
+  return `${action}失败 (${status}): ${detail.slice(0, 140)}`;
+}
+
+export async function testGitHubConnection(config: GitHubConfig): Promise<{ ok: boolean; message: string }> {
+  if (!config.owner.trim() || !config.repo.trim() || !config.token.trim()) {
+    return { ok: false, message: '请先填写 Owner、仓库名和 Token' };
+  }
+  try {
+    const res = await fetch(`https://api.github.com/repos/${config.owner.trim()}/${config.repo.trim()}`, {
+      headers: {
+        Authorization: `Bearer ${config.token.trim()}`,
+        Accept: 'application/vnd.github+json',
+      },
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      return { ok: false, message: formatGitHubApiError(res.status, txt, '连接测试') };
+    }
+    const repoInfo = await res.json();
+    const canPush = Boolean(repoInfo?.permissions?.push);
+    if (!canPush) {
+      return {
+        ok: false,
+        message: '已连上仓库，但该 Token 没有写入权限（请检查 Contents 是否设为 Read and write）。',
+      };
+    }
+    return {
+      ok: true,
+      message: `连接成功！已获得 ${repoInfo.full_name} 写入权限，可随时一键上传。`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: `网络无法连接 api.github.com：${err instanceof Error ? err.message : '请检查网络或代理'}`,
+    };
+  }
+}
+
 function encodeUtf8ToBase64(str: string): string {
   const bytes = new TextEncoder().encode(str);
   let binary = '';
@@ -448,7 +517,7 @@ export async function uploadImageToGitHub(
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`上传至 GitHub 失败 (${res.status}): ${errText}`);
+    throw new Error(formatGitHubApiError(res.status, errText, '上传图片至 GitHub'));
   }
 
   const data = await res.json();
@@ -496,7 +565,6 @@ export async function syncGalleryIndexToGitHub(config: GitHubConfig, photos: Pho
   if (!config.owner || !config.repo || !config.token) return;
   const branch = config.branch || 'main';
   const indexPath = 'gallery-index.json';
-  const existingSha = await getGitHubFileSha(config, indexPath);
 
   const cleanIndex = photos
     .filter((p) => !p.isSample)
@@ -521,29 +589,35 @@ export async function syncGalleryIndexToGitHub(config: GitHubConfig, photos: Pho
   );
 
   const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${indexPath}`;
-  const bodyPayload: Record<string, string> = {
-    message: `chore(index): sync gallery-index.json (${cleanIndex.length} items)`,
-    content: encodeUtf8ToBase64(jsonString),
-    branch,
-  };
-  if (existingSha) {
-    bodyPayload.sha = existingSha;
-  }
 
-  const res = await fetch(url, {
-    method: 'PUT',
-    priority: 'low',
-    headers: {
-      Authorization: `Bearer ${config.token}`,
-      Accept: 'application/vnd.github+json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(bodyPayload),
-  } as RequestInit);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const existingSha = await getGitHubFileSha(config, indexPath);
+    const bodyPayload: Record<string, string> = {
+      message: `chore(index): sync gallery-index.json (${cleanIndex.length} items)`,
+      content: encodeUtf8ToBase64(jsonString),
+      branch,
+    };
+    if (existingSha) {
+      bodyPayload.sha = existingSha;
+    }
 
-  if (!res.ok) {
+    const res = await fetch(url, {
+      method: 'PUT',
+      priority: 'low',
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(bodyPayload),
+    } as RequestInit);
+
+    if (res.ok) return;
+    if (res.status === 409 && attempt === 0) {
+      continue; // retry once with refreshed SHA
+    }
     const errText = await res.text();
-    throw new Error(`同步索引文件失败 (${res.status}): ${errText}`);
+    throw new Error(formatGitHubApiError(res.status, errText, '同步索引 gallery-index.json'));
   }
 }
 
@@ -582,9 +656,42 @@ export async function loadPublicArchiveConfig(): Promise<PublicArchiveConfig | n
   return null;
 }
 
-export async function fetchPublicGalleryIndex(cfg: PublicArchiveConfig): Promise<PhotoItem[]> {
+export async function fetchPublicGalleryIndex(
+  cfg: PublicArchiveConfig,
+  token?: string
+): Promise<PhotoItem[]> {
   const branch = cfg.branch || 'main';
   const cacheBust = Math.floor(Date.now() / 60000);
+
+  // 1. Prefer real-time GitHub API (never stale CDN cache!)
+  try {
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github.raw+json',
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    const apiRes = await fetch(
+      `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/gallery-index.json?ref=${encodeURIComponent(
+        branch
+      )}`,
+      {
+        headers,
+        cache: 'no-store',
+        signal: AbortSignal.timeout?.(5500),
+      }
+    );
+    if (apiRes.ok) {
+      const parsed = await apiRes.json();
+      if (Array.isArray(parsed.items)) {
+        return (parsed.items as PhotoItem[]).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      }
+    }
+  } catch {
+    // fall through to mirrors
+  }
+
+  // 2. Fallback mirrors (raw.githubusercontent.com with short timeout -> jsDelivr)
   const candidates = [
     `https://raw.githubusercontent.com/${cfg.owner}/${cfg.repo}/${branch}/gallery-index.json?t=${cacheBust}`,
     `https://cdn.jsdelivr.net/gh/${cfg.owner}/${cfg.repo}@${branch}/gallery-index.json`,
@@ -592,7 +699,7 @@ export async function fetchPublicGalleryIndex(cfg: PublicArchiveConfig): Promise
 
   for (const url of candidates) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout?.(4500) });
       if (!res.ok) continue;
       const parsed = await res.json();
       if (Array.isArray(parsed.items)) {

@@ -13,7 +13,7 @@ import {
 import { GalleryCard } from './components/GalleryCard';
 import { GitHubSyncDialog } from './components/GitHubSyncDialog';
 import { LightboxDialog } from './components/LightboxDialog';
-import { UploadDialog, UploadDraft } from './components/UploadDialog';
+import { UploadCommitPayload, UploadDialog, UploadDraft } from './components/UploadDialog';
 import {
   ColorFamily,
   GitHubConfig,
@@ -31,10 +31,12 @@ import {
   fetchPublicGalleryIndex,
   loadAllPhotos,
   loadGitHubConfig,
+  loadInstantUploadPref,
   loadPublicArchiveConfig,
   loadUiConfig,
   pullGalleryIndexFromGitHub,
   saveGitHubConfig,
+  saveInstantUploadPref,
   savePhotoLocal,
   saveUiConfig,
   syncGalleryIndexToGitHub,
@@ -106,6 +108,7 @@ export function App() {
   const [colorSchemePref, setColorSchemePref] = useState<ColorSchemePref>(() => readColorSchemePreference());
   const [githubConfig, setGithubConfig] = useState<GitHubConfig>(() => loadGitHubConfig());
   const [publicArchive, setPublicArchive] = useState<PublicArchiveConfig | null>(null);
+  const [instantUpload, setInstantUpload] = useState<boolean>(() => loadInstantUploadPref());
 
   // Active Lightbox & Upload Queue
   const [activePhoto, setActivePhoto] = useState<PhotoItem | null>(null);
@@ -150,7 +153,7 @@ export function App() {
               useJsDelivr: pubCfg.useJsDelivr,
             };
           });
-          const publicItems = await fetchPublicGalleryIndex(pubCfg);
+          const publicItems = await fetchPublicGalleryIndex(pubCfg, loadGitHubConfig().token);
           if (publicItems.length > 0) {
             setPhotos(publicItems);
             return;
@@ -204,8 +207,100 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
+  const isGitHubConnected = Boolean(githubConfig.owner && githubConfig.repo && githubConfig.token);
+  const isPublicReadOnly = Boolean(publicArchive) && !isGitHubConnected;
+  const canEdit = !isPublicReadOnly;
+
+  const commitDraftBatch = useCallback(
+    async (
+      items: {
+        draft: UploadDraft;
+        title: string;
+        subject: SubjectCategory;
+        compositionTags: string[];
+        lightingTags: string[];
+        toneTags: string[];
+        note: string;
+      }[]
+    ) => {
+      if (items.length === 0) return;
+
+      const createdPhotos: PhotoItem[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i];
+        if (items.length > 1) {
+          showToast(`正在上传第 ${i + 1} / ${items.length} 张...`);
+        }
+
+        const id = `photo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        let imageUrl = entry.draft.processed.webpDataUrl;
+        let githubPath: string | undefined;
+        let githubSha: string | undefined;
+
+        if (isGitHubConnected) {
+          const uploaded = await uploadImageToGitHub(githubConfig, id, entry.draft.processed.base64Content);
+          imageUrl = uploaded.remoteUrl;
+          githubPath = uploaded.githubPath;
+          githubSha = uploaded.githubSha;
+        }
+
+        const newPhoto: PhotoItem = {
+          id,
+          title: entry.title,
+          subject: entry.subject,
+          compositionTags: entry.compositionTags,
+          lightingTags: entry.lightingTags,
+          toneTags: entry.toneTags,
+          note: entry.note,
+          width: entry.draft.processed.width,
+          height: entry.draft.processed.height,
+          aspectRatio: entry.draft.processed.aspectRatio,
+          sizeKB: entry.draft.processed.sizeKB,
+          originalSizeKB: entry.draft.processed.originalSizeKB,
+          palette: entry.draft.processed.palette,
+          colorFamilies: entry.draft.processed.colorFamilies,
+          exif: entry.draft.processed.exif,
+          imageUrl,
+          githubPath,
+          githubSha,
+          createdAt: new Date(Date.now() + i).toISOString(),
+        };
+
+        await savePhotoLocal(newPhoto);
+        createdPhotos.push(newPhoto);
+      }
+
+      const nextList = [...createdPhotos.reverse(), ...photos];
+      runViewTransition(() => {
+        setPhotos(nextList);
+      });
+
+      if (isGitHubConnected) {
+        await syncGalleryIndexToGitHub(githubConfig, nextList);
+        showToast(
+          createdPhotos.length > 1
+            ? `已一键上传 ${createdPhotos.length} 张作品并同步至 GitHub！`
+            : `已压缩为 WebP (${createdPhotos[0].sizeKB} KB) 并同步至 GitHub`
+        );
+      } else {
+        showToast(
+          createdPhotos.length > 1
+            ? `已一键入库 ${createdPhotos.length} 张作品至本地库`
+            : `已入库 (${createdPhotos[0].sizeKB} KB WebP)`
+        );
+      }
+    },
+    [githubConfig, isGitHubConnected, photos, showToast]
+  );
+
   const ingestImageFiles = useCallback(
     async (files: File[]) => {
+      if (!canEdit) {
+        showToast('请先点右上角「策展登录」填写 GitHub Token，再上传照片');
+        githubDialogRef.current?.showModal();
+        return;
+      }
+
       const imageFiles = files.filter((f) => f.type.startsWith('image/'));
       if (imageFiles.length === 0) return;
 
@@ -234,21 +329,41 @@ export function App() {
         return;
       }
 
+      if (instantUpload) {
+        const defaultSubj: SubjectCategory = selectedSubject === 'all' ? 'humanities' : selectedSubject;
+        try {
+          await commitDraftBatch(
+            drafts.map((d) => {
+              const baseName = d.fileName.replace(/\.[^.]+$/, '').trim();
+              const isGeneric =
+                !baseName || baseName.toLowerCase() === 'image' || baseName.startsWith('clipboard');
+              return {
+                draft: d,
+                title: isGeneric ? `暗房切片 · ${new Date().toLocaleDateString('zh-CN')}` : baseName,
+                subject: defaultSubj,
+                compositionTags: ['大面积留白'],
+                lightingTags: ['柔光漫射'],
+                toneTags: ['复古胶片暖调'],
+                note: '',
+              };
+            })
+          );
+          return;
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : '一键上传失败，已转入手动入库弹窗');
+        }
+      }
+
       setUploadQueue((prev) => [...prev, ...drafts]);
       if (uploadDialogRef.current && !uploadDialogRef.current.open) {
         uploadDialogRef.current.showModal();
       }
     },
-    [showToast]
+    [canEdit, commitDraftBatch, instantUpload, selectedSubject, showToast]
   );
 
-  const isGitHubConnected = Boolean(githubConfig.owner && githubConfig.repo && githubConfig.token);
-  const isPublicReadOnly = Boolean(publicArchive) && !isGitHubConnected;
-  const canEdit = !isPublicReadOnly;
-
-  // Global Ctrl+V / Cmd+V paste upload (only when canEdit)
+  // Global Ctrl+V / Cmd+V paste upload
   useEffect(() => {
-    if (!canEdit) return;
     const onPaste = async (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
@@ -266,81 +381,40 @@ export function App() {
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [ingestImageFiles, canEdit]);
+  }, [ingestImageFiles]);
 
-  const handleCommitUpload = async ({
-    draft,
-    title,
-    subject,
-    compositionTags,
-    lightingTags,
-    toneTags,
-    note,
-  }: {
-    draft: UploadDraft;
-    title: string;
+  const handleCommitUpload = async (payload: UploadCommitPayload) => {
+    await commitDraftBatch([payload]);
+    const remaining = uploadQueue.slice(1);
+    setUploadQueue(remaining);
+    if (remaining.length === 0) {
+      await closeTopLayerDialog(uploadDialogRef.current);
+    }
+  };
+
+  const handleCommitAll = async (defaults: {
     subject: SubjectCategory;
     compositionTags: string[];
     lightingTags: string[];
     toneTags: string[];
-    note: string;
   }) => {
-    try {
-      const id = `photo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      let imageUrl = draft.processed.webpDataUrl;
-      let githubPath: string | undefined;
-      let githubSha: string | undefined;
-
-      if (isGitHubConnected) {
-        const uploaded = await uploadImageToGitHub(githubConfig, id, draft.processed.base64Content);
-        imageUrl = uploaded.remoteUrl;
-        githubPath = uploaded.githubPath;
-        githubSha = uploaded.githubSha;
-      }
-
-      const newPhoto: PhotoItem = {
-        id,
-        title,
-        subject,
-        compositionTags,
-        lightingTags,
-        toneTags,
-        note,
-        width: draft.processed.width,
-        height: draft.processed.height,
-        aspectRatio: draft.processed.aspectRatio,
-        sizeKB: draft.processed.sizeKB,
-        originalSizeKB: draft.processed.originalSizeKB,
-        palette: draft.processed.palette,
-        colorFamilies: draft.processed.colorFamilies,
-        exif: draft.processed.exif,
-        imageUrl,
-        githubPath,
-        githubSha,
-        createdAt: new Date().toISOString(),
-      };
-
-      await savePhotoLocal(newPhoto);
-      const nextList = [newPhoto, ...photos];
-      runViewTransition(() => {
-        setPhotos(nextList);
-      });
-
-      if (isGitHubConnected) {
-        await syncGalleryIndexToGitHub(githubConfig, nextList);
-        showToast(`已压缩为 WebP (${newPhoto.sizeKB} KB) 并同步至 GitHub`);
-      } else {
-        showToast(`已入库 (${newPhoto.sizeKB} KB WebP)`);
-      }
-
-      const remaining = uploadQueue.slice(1);
-      setUploadQueue(remaining);
-      if (remaining.length === 0) {
-        await closeTopLayerDialog(uploadDialogRef.current);
-      }
-    } catch (err) {
-      showToast(`入库失败：${err instanceof Error ? err.message : '请检查网络或 Token 权限'}`);
-    }
+    await commitDraftBatch(
+      uploadQueue.map((d) => {
+        const baseName = d.fileName.replace(/\.[^.]+$/, '').trim();
+        const isGeneric = !baseName || baseName.toLowerCase() === 'image' || baseName.startsWith('clipboard');
+        return {
+          draft: d,
+          title: isGeneric ? `暗房切片 · ${new Date().toLocaleDateString('zh-CN')}` : baseName,
+          subject: defaults.subject,
+          compositionTags: defaults.compositionTags,
+          lightingTags: defaults.lightingTags,
+          toneTags: defaults.toneTags,
+          note: '',
+        };
+      })
+    );
+    setUploadQueue([]);
+    await closeTopLayerDialog(uploadDialogRef.current);
   };
 
   const handleDeletePhoto = async (photo: PhotoItem) => {
@@ -517,7 +591,6 @@ export function App() {
     <div
       className="min-h-dvh bg-[var(--bg-canvas)] text-[var(--ink-primary)] transition-colors duration-200"
       onDragEnter={(e) => {
-        if (!canEdit) return;
         if (e.dataTransfer.types.includes('Files')) {
           dragDepthRef.current += 1;
           setIsDraggingOver(true);
@@ -525,13 +598,11 @@ export function App() {
       }}
       onDragOver={(e) => e.preventDefault()}
       onDragLeave={() => {
-        if (!canEdit) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDraggingOver(false);
       }}
       onDrop={async (e) => {
         e.preventDefault();
-        if (!canEdit) return;
         dragDepthRef.current = 0;
         setIsDraggingOver(false);
         const dropped = Array.from(e.dataTransfer.files || []);
@@ -1080,6 +1151,23 @@ export function App() {
               ))}
             </div>
           </div>
+
+          {canEdit && (
+            <div className="border-t border-[var(--border-subtle)] pt-3">
+              <label className="flex cursor-pointer items-center justify-between gap-2 text-[11px] text-[var(--ink-secondary)]">
+                <span>选图 / 粘贴后直接一键入库</span>
+                <input
+                  type="checkbox"
+                  checked={instantUpload}
+                  onChange={(e) => {
+                    setInstantUpload(e.target.checked);
+                    saveInstantUploadPref(e.target.checked);
+                  }}
+                  className="h-3.5 w-3.5"
+                />
+              </label>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1101,6 +1189,11 @@ export function App() {
         queue={uploadQueue}
         defaultSubject={selectedSubject === 'all' ? 'humanities' : selectedSubject}
         isGitHubConnected={isGitHubConnected}
+        instantUpload={instantUpload}
+        onToggleInstantUpload={(enabled) => {
+          setInstantUpload(enabled);
+          saveInstantUploadPref(enabled);
+        }}
         onCloseAll={() => setUploadQueue([])}
         onSkipCurrent={() => {
           const rest = uploadQueue.slice(1);
@@ -1110,6 +1203,7 @@ export function App() {
           }
         }}
         onCommitCurrent={handleCommitUpload}
+        onCommitAll={handleCommitAll}
       />
 
       {/* GitHub Sync Modal */}
@@ -1120,26 +1214,32 @@ export function App() {
         onSaveConfig={(next) => {
           setGithubConfig(next);
           saveGitHubConfig(next);
-          showToast(next.token ? '已解锁策展写入权限并同步至 GitHub' : '已切换为只读 / 本地模式');
+          showToast(next.token ? '已解锁策展写入权限，可直接一键上传' : '已切换为只读 / 本地模式');
+          if (next.token && next.owner && next.repo) {
+            void fetchPublicGalleryIndex(
+              { owner: next.owner, repo: next.repo, branch: next.branch || 'main', useJsDelivr: next.useJsDelivr },
+              next.token
+            ).then((latest) => {
+              if (latest.length > 0) {
+                runViewTransition(() => setPhotos(latest));
+              }
+            });
+          }
         }}
         onPullFromGitHub={async (cfg) => {
-          try {
-            const pulled = await pullGalleryIndexFromGitHub(cfg);
+          const pulled = await pullGalleryIndexFromGitHub(cfg);
+          if (pulled.length > 0) {
+            runViewTransition(() => setPhotos(pulled.sort((a, b) => b.createdAt.localeCompare(a.createdAt))));
+          } else {
             const merged = await loadAllPhotos();
             runViewTransition(() => setPhotos(merged));
-            showToast(`已从云端恢复 ${pulled.length} 张切片记录`);
-            await closeTopLayerDialog(githubDialogRef.current);
-          } catch (err) {
-            showToast(err instanceof Error ? err.message : '拉取失败');
           }
+          showToast(`已从云端恢复 ${pulled.length} 张切片记录`);
+          await closeTopLayerDialog(githubDialogRef.current);
         }}
         onPushIndexToGitHub={async (cfg) => {
-          try {
-            await syncGalleryIndexToGitHub(cfg, photos);
-            showToast('已将当前图库索引推送至 GitHub');
-          } catch (err) {
-            showToast(err instanceof Error ? err.message : '推送失败');
-          }
+          await syncGalleryIndexToGitHub(cfg, photos);
+          showToast('已将当前图库索引推送至 GitHub');
         }}
       />
     </div>

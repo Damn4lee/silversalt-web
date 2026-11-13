@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { CloudDownload, FolderGit2, RefreshCw, X } from 'lucide-react';
+import { CheckCircle2, CloudDownload, FolderGit2, RefreshCw, ShieldAlert, ShieldCheck, X } from 'lucide-react';
 import { GitHubConfig, PublicArchiveConfig } from '../types';
+import { testGitHubConnection } from '../utils/storage';
 import { closeTopLayerDialog, useDialogController } from '../utils/webPlatform';
 
 interface GitHubSyncDialogProps {
@@ -21,7 +22,8 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
   onPushIndexToGitHub,
 }) => {
   const [draft, setDraft] = useState<GitHubConfig>(config);
-  const [busyAction, setBusyAction] = useState<'pull' | 'push' | null>(null);
+  const [busyAction, setBusyAction] = useState<'test' | 'pull' | 'push' | null>(null);
+  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     setDraft(config);
@@ -29,9 +31,10 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
 
   useDialogController(dialogRef, () => {
     setDraft(config);
+    setFeedback(null);
   });
 
-  const isValid = Boolean(draft.owner && draft.repo && draft.token);
+  const isValid = Boolean(draft.owner.trim() && draft.repo.trim() && draft.token.trim());
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,6 +46,17 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
       token: draft.token.trim(),
     });
     void closeTopLayerDialog(dialogRef.current);
+  };
+
+  const handleTest = async () => {
+    setBusyAction('test');
+    setFeedback(null);
+    try {
+      const res = await testGitHubConnection(draft);
+      setFeedback({ ok: res.ok, text: res.message });
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   return (
@@ -57,7 +71,7 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
           <div className="flex items-center gap-2">
             <FolderGit2 className="h-4 w-4 text-[var(--accent)]" aria-hidden="true" />
             <h2 id="github-dialog-title" className="font-editorial text-base font-medium">
-              GitHub 私有图床与跨端索引同步
+              GitHub 私有图床与策展权限
             </h2>
           </div>
           <button
@@ -73,16 +87,34 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
         <p className="text-xs leading-relaxed text-[var(--ink-secondary)]">
           {publicArchive && !config.token ? (
             <>
-              当前站点处于<strong>公开只读展览模式</strong>（数据源：<code className="font-tabular">{publicArchive.owner}/{publicArchive.repo}</code>）。
-              填入你自己的 GitHub Token（仅存于本机浏览器 <code className="font-tabular">localStorage</code>）即可解锁「收录 / 修订 / 淘汰」策展写入权限。
+              当前为<strong>访客只读模式</strong>（数据源：<code className="font-tabular">{publicArchive.owner}/{publicArchive.repo}</code>）。
+              在下方贴入你的 GitHub Token 并保存（仅存于当前浏览器 <code className="font-tabular">localStorage</code>），即可解锁「收录 / 一键上传 / 淘汰」权限。
             </>
           ) : (
             <>
-              凭证仅存储在当前浏览器的 <code className="font-tabular">localStorage</code>。配置后，上传切片将转为 WebP 直传仓库
-              <code className="font-tabular"> photos/YYYY-MM/</code> 并维护 <code className="font-tabular">gallery-index.json</code>；淘汰照片也会同步删除云端源文件。
+              凭证仅保存在当前浏览器 <code className="font-tabular">localStorage</code>。上传的切片会压成 WebP 写入仓库
+              <code className="font-tabular"> photos/YYYY-MM/</code> 并自动同步 <code className="font-tabular">gallery-index.json</code>。
             </>
           )}
         </p>
+
+        {feedback && (
+          <div
+            role="alert"
+            className={`flex items-start gap-2 border px-3 py-2.5 text-xs ${
+              feedback.ok
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                : 'border-[var(--danger)] bg-red-500/10 text-[var(--danger)]'
+            }`}
+          >
+            {feedback.ok ? (
+              <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            ) : (
+              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            )}
+            <span>{feedback.text}</span>
+          </div>
+        )}
 
         <div className="space-y-3 text-xs">
           <div className="grid grid-cols-2 gap-3">
@@ -93,7 +125,7 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
               <input
                 id="gh-owner"
                 type="text"
-                placeholder="例如: username"
+                placeholder="例如: Damn4lee"
                 value={draft.owner}
                 onChange={(e) => setDraft({ ...draft, owner: e.target.value })}
                 className="mt-1 w-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-[var(--ink-primary)] focus:border-[var(--accent)] focus:outline-none"
@@ -102,12 +134,12 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
 
             <div>
               <label htmlFor="gh-repo" className="block text-[11px] text-[var(--ink-muted)]">
-                仓库名 (Repository)
+                图床仓库名 (Repository)
               </label>
               <input
                 id="gh-repo"
                 type="text"
-                placeholder="例如: photo-archive"
+                placeholder="例如: myphotos"
                 value={draft.repo}
                 onChange={(e) => setDraft({ ...draft, repo: e.target.value })}
                 className="mt-1 w-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-[var(--ink-primary)] focus:border-[var(--accent)] focus:outline-none"
@@ -159,23 +191,36 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-4">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              disabled={!isValid || busyAction !== null}
+              onClick={() => void handleTest()}
+              className="flex items-center gap-1.5 border border-[var(--border-subtle)] px-2.5 py-1.5 text-xs text-[var(--ink-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] disabled:opacity-40"
+            >
+              <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{busyAction === 'test' ? '测试中...' : '测试权限'}</span>
+            </button>
+
             <button
               type="button"
               disabled={!isValid || busyAction !== null}
               onClick={async () => {
                 setBusyAction('pull');
+                setFeedback(null);
                 try {
                   onSaveConfig(draft);
                   await onPullFromGitHub(draft);
+                } catch (err) {
+                  setFeedback({ ok: false, text: err instanceof Error ? err.message : '拉取失败' });
                 } finally {
                   setBusyAction(null);
                 }
               }}
-              className="flex items-center gap-1.5 border border-[var(--border-subtle)] px-3 py-1.5 text-xs text-[var(--ink-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] disabled:opacity-40"
+              className="flex items-center gap-1.5 border border-[var(--border-subtle)] px-2.5 py-1.5 text-xs text-[var(--ink-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] disabled:opacity-40"
             >
               <CloudDownload className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{busyAction === 'pull' ? '拉取中...' : '从云端恢复'}</span>
+              <span>{busyAction === 'pull' ? '拉取中...' : '拉取云端'}</span>
             </button>
 
             <button
@@ -183,14 +228,18 @@ export const GitHubSyncDialog: React.FC<GitHubSyncDialogProps> = ({
               disabled={!isValid || busyAction !== null}
               onClick={async () => {
                 setBusyAction('push');
+                setFeedback(null);
                 try {
                   onSaveConfig(draft);
                   await onPushIndexToGitHub(draft);
+                  setFeedback({ ok: true, text: '已将当前图库索引推送到 GitHub！' });
+                } catch (err) {
+                  setFeedback({ ok: false, text: err instanceof Error ? err.message : '推送失败' });
                 } finally {
                   setBusyAction(null);
                 }
               }}
-              className="flex items-center gap-1.5 border border-[var(--border-subtle)] px-3 py-1.5 text-xs text-[var(--ink-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] disabled:opacity-40"
+              className="flex items-center gap-1.5 border border-[var(--border-subtle)] px-2.5 py-1.5 text-xs text-[var(--ink-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] disabled:opacity-40"
             >
               <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{busyAction === 'push' ? '同步中...' : '推送索引'}</span>

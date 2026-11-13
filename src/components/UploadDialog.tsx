@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Cloud, Upload, X } from 'lucide-react';
+import { Cloud, ShieldAlert, Upload, X, Zap } from 'lucide-react';
 import { PRESET_TAXONOMY, SubjectCategory } from '../types';
 import { ProcessedImageResult } from '../utils/imageProcessor';
 import { closeTopLayerDialog, isImeComposing, useDialogController } from '../utils/webPlatform';
@@ -10,21 +10,31 @@ export interface UploadDraft {
   processed: ProcessedImageResult;
 }
 
+export interface UploadCommitPayload {
+  draft: UploadDraft;
+  title: string;
+  subject: SubjectCategory;
+  compositionTags: string[];
+  lightingTags: string[];
+  toneTags: string[];
+  note: string;
+}
+
 interface UploadDialogProps {
   dialogRef: React.RefObject<HTMLDialogElement | null>;
   queue: UploadDraft[];
   defaultSubject: SubjectCategory;
   isGitHubConnected: boolean;
+  instantUpload: boolean;
+  onToggleInstantUpload: (enabled: boolean) => void;
   onCloseAll: () => void;
   onSkipCurrent: () => void;
-  onCommitCurrent: (payload: {
-    draft: UploadDraft;
-    title: string;
+  onCommitCurrent: (payload: UploadCommitPayload) => Promise<void>;
+  onCommitAll: (payload: {
     subject: SubjectCategory;
     compositionTags: string[];
     lightingTags: string[];
     toneTags: string[];
-    note: string;
   }) => Promise<void>;
 }
 
@@ -33,9 +43,12 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
   queue,
   defaultSubject,
   isGitHubConnected,
+  instantUpload,
+  onToggleInstantUpload,
   onCloseAll,
   onSkipCurrent,
   onCommitCurrent,
+  onCommitAll,
 }) => {
   const current = queue[0] ?? null;
 
@@ -48,9 +61,13 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
   const [customLight, setCustomLight] = useState('');
   const [customTone, setCustomTone] = useState('');
   const [note, setNote] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const [submitting, setSubmitting] = useState<'single' | 'batch' | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  useDialogController(dialogRef, onCloseAll);
+  useDialogController(dialogRef, () => {
+    setErrorMsg(null);
+    onCloseAll();
+  });
 
   useEffect(() => {
     if (!current) return;
@@ -65,6 +82,7 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
     setCustomLight('');
     setCustomTone('');
     setNote('');
+    setErrorMsg(null);
   }, [current?.id, defaultSubject]);
 
   const toggleTag = (list: string[], tag: string, setter: React.Dispatch<React.SetStateAction<string[]>>) => {
@@ -74,7 +92,8 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!current || submitting) return;
-    setSubmitting(true);
+    setSubmitting('single');
+    setErrorMsg(null);
     try {
       await onCommitCurrent({
         draft: current,
@@ -85,8 +104,28 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
         toneTags: toneTags.length > 0 ? toneTags : ['复古胶片暖调'],
         note: note.trim(),
       });
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : '入库失败，请检查网络连接或 GitHub Token 权限');
     } finally {
-      setSubmitting(false);
+      setSubmitting(null);
+    }
+  };
+
+  const handleBatchUpload = async () => {
+    if (queue.length === 0 || submitting) return;
+    setSubmitting('batch');
+    setErrorMsg(null);
+    try {
+      await onCommitAll({
+        subject,
+        compositionTags: compTags.length > 0 ? compTags : ['大面积留白'],
+        lightingTags: lightTags.length > 0 ? lightTags : ['柔光漫射'],
+        toneTags: toneTags.length > 0 ? toneTags : ['复古胶片暖调'],
+      });
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : '批量上传失败，请检查网络或 Token 权限');
+    } finally {
+      setSubmitting(null);
     }
   };
 
@@ -105,7 +144,7 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
         <form onSubmit={handleSubmit} className="space-y-5">
           <div className="flex items-start justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
             <div>
-              <div className="flex items-center gap-2.5">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <h2 id="upload-dialog-title" className="font-editorial text-lg font-medium">
                   入库审美拆解
                 </h2>
@@ -130,6 +169,32 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
               <X className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
+
+          {errorMsg && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 border border-[var(--danger)] bg-red-500/10 px-3.5 py-2.5 text-xs text-[var(--danger)]"
+            >
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {/* Multi-file thumbnail strip */}
+          {queue.length > 1 && (
+            <div className="flex items-center gap-2 overflow-x-auto border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2">
+              {queue.map((item, idx) => (
+                <div
+                  key={item.id}
+                  className={`relative h-12 w-12 shrink-0 overflow-hidden border ${
+                    idx === 0 ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : 'border-[var(--border-subtle)] opacity-60'
+                  }`}
+                >
+                  <img src={item.processed.webpDataUrl} alt={item.fileName} className="h-full w-full object-cover" />
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-6 md:grid-cols-12">
             {/* Left Print Preview + Pigment + EXIF */}
@@ -244,7 +309,7 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
 
               <div>
                 <label htmlFor="upload-note" className="block text-[11px] text-[var(--ink-muted)]">
-                  审美拆解笔记（它为什么成立？）
+                  审美拆解笔记（可留空，入库后随时补充）
                 </label>
                 <textarea
                   id="upload-note"
@@ -259,34 +324,64 @@ export const UploadDialog: React.FC<UploadDialogProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4">
-            <span className="text-[11px] text-[var(--ink-muted)]">
-              {isGitHubConnected ? '提交后将上传 WebP 至 GitHub 并更新索引' : '提交后保存在本地 IndexedDB（离线可用）'}
-            </span>
+            <label className="flex cursor-pointer items-center gap-2 text-[11px] text-[var(--ink-secondary)]">
+              <input
+                type="checkbox"
+                checked={instantUpload}
+                onChange={(e) => onToggleInstantUpload(e.target.checked)}
+                className="h-3.5 w-3.5"
+              />
+              <Zap className="h-3.5 w-3.5 text-[var(--accent)]" aria-hidden="true" />
+              <span>下次选图 / 粘贴后直接一键入库（跳过此弹窗）</span>
+            </label>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {queue.length > 1 && (
-                <button
-                  type="button"
-                  onClick={onSkipCurrent}
-                  className="border border-[var(--border-subtle)] px-3.5 py-2 text-xs text-[var(--ink-secondary)] hover:border-[var(--border-strong)]"
-                >
-                  跳过此张
-                </button>
+                <>
+                  <button
+                    type="button"
+                    disabled={submitting !== null}
+                    onClick={onSkipCurrent}
+                    className="border border-[var(--border-subtle)] px-3 py-2 text-xs text-[var(--ink-secondary)] hover:border-[var(--border-strong)]"
+                  >
+                    跳过当前
+                  </button>
+                  <button
+                    type="button"
+                    disabled={submitting !== null}
+                    onClick={() => void handleBatchUpload()}
+                    className="flex items-center gap-1.5 border border-[var(--accent)] bg-[var(--accent-soft)] px-4 py-2 text-xs font-medium text-[var(--accent)] transition hover:opacity-90 disabled:opacity-50"
+                  >
+                    <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>{submitting === 'batch' ? '批量上传中...' : `一键全部入库 (${queue.length} 张)`}</span>
+                  </button>
+                </>
               )}
+
               <button
                 type="button"
+                disabled={submitting !== null}
                 onClick={() => void closeTopLayerDialog(dialogRef.current)}
                 className="border border-[var(--border-subtle)] px-4 py-2 text-xs text-[var(--ink-secondary)] hover:border-[var(--border-strong)]"
               >
                 取消
               </button>
+
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting !== null}
                 className="flex items-center gap-1.5 bg-[var(--accent)] px-5 py-2 text-xs font-medium text-[var(--accent-ink)] transition hover:opacity-90 disabled:opacity-50"
               >
                 {isGitHubConnected ? <Cloud className="h-3.5 w-3.5" aria-hidden="true" /> : <Upload className="h-3.5 w-3.5" aria-hidden="true" />}
-                <span>{submitting ? '正在处理...' : queue.length > 1 ? '入库并处理下一张' : '确认入库'}</span>
+                <span>
+                  {submitting === 'single'
+                    ? '正在上传...'
+                    : queue.length > 1
+                    ? '保存当前并下一张'
+                    : isGitHubConnected
+                    ? '一键上传至云端'
+                    : '保存至本地'}
+                </span>
               </button>
             </div>
           </div>
