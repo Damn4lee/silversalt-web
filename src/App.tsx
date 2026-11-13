@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUpDown,
+  Camera,
   ChevronDown,
   ImagePlus,
   KeyRound,
@@ -26,21 +27,29 @@ import {
 } from './types';
 import { processImageToWebP } from './utils/imageProcessor';
 import {
+  checkEdgeStatus,
   deleteImageFromGitHub,
+  deleteImageViaEdge,
   deletePhotoLocal,
+  EdgeStatus,
+  fetchEdgeGallery,
   fetchPublicGalleryIndex,
   loadAllPhotos,
   loadGitHubConfig,
   loadInstantUploadPref,
   loadPublicArchiveConfig,
   loadUiConfig,
+  loginEdgeCurator,
+  logoutEdgeCurator,
   pullGalleryIndexFromGitHub,
   saveGitHubConfig,
   saveInstantUploadPref,
   savePhotoLocal,
   saveUiConfig,
   syncGalleryIndexToGitHub,
+  syncGalleryIndexViaEdge,
   uploadImageToGitHub,
+  uploadImageViaEdge,
 } from './utils/storage';
 import {
   applyColorSchemePreference,
@@ -108,6 +117,7 @@ export function App() {
   const [colorSchemePref, setColorSchemePref] = useState<ColorSchemePref>(() => readColorSchemePreference());
   const [githubConfig, setGithubConfig] = useState<GitHubConfig>(() => loadGitHubConfig());
   const [publicArchive, setPublicArchive] = useState<PublicArchiveConfig | null>(null);
+  const [edgeStatus, setEdgeStatus] = useState<EdgeStatus>({ edgeMode: false, authenticated: false });
   const [instantUpload, setInstantUpload] = useState<boolean>(() => loadInstantUploadPref());
 
   // Active Lightbox & Upload Queue
@@ -120,6 +130,7 @@ export function App() {
   const topBarRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const lightboxDialogRef = useRef<HTMLDialogElement | null>(null);
   const uploadDialogRef = useRef<HTMLDialogElement | null>(null);
   const githubDialogRef = useRef<HTMLDialogElement | null>(null);
@@ -139,24 +150,35 @@ export function App() {
 
     async function bootstrap() {
       try {
-        const pubCfg = await loadPublicArchiveConfig();
-        setPublicArchive(pubCfg);
+        const [edge, pubCfg] = await Promise.all([checkEdgeStatus(), loadPublicArchiveConfig()]);
+        setEdgeStatus(edge);
+        const effectivePub = edge.target || pubCfg;
+        setPublicArchive(effectivePub);
 
-        if (pubCfg) {
+        if (effectivePub) {
           setGithubConfig((prev) => {
             if (prev.owner && prev.repo) return prev;
             return {
               ...prev,
-              owner: prev.owner || pubCfg.owner,
-              repo: prev.repo || pubCfg.repo,
-              branch: prev.branch || pubCfg.branch,
-              useJsDelivr: pubCfg.useJsDelivr,
+              owner: prev.owner || effectivePub.owner,
+              repo: prev.repo || effectivePub.repo,
+              branch: prev.branch || effectivePub.branch,
+              useJsDelivr: effectivePub.useJsDelivr,
             };
           });
-          const publicItems = await fetchPublicGalleryIndex(pubCfg, loadGitHubConfig().token);
-          if (publicItems.length > 0) {
-            setPhotos(publicItems);
-            return;
+
+          if (edge.edgeMode) {
+            const edgeItems = await fetchEdgeGallery();
+            if (edgeItems.length > 0) {
+              setPhotos(edgeItems);
+              return;
+            }
+          } else {
+            const publicItems = await fetchPublicGalleryIndex(effectivePub, loadGitHubConfig().token);
+            if (publicItems.length > 0) {
+              setPhotos(publicItems);
+              return;
+            }
           }
         }
 
@@ -208,7 +230,9 @@ export function App() {
   }, []);
 
   const isGitHubConnected = Boolean(githubConfig.owner && githubConfig.repo && githubConfig.token);
-  const isPublicReadOnly = Boolean(publicArchive) && !isGitHubConnected;
+  const isEdgeAuthenticated = edgeStatus.edgeMode && edgeStatus.authenticated;
+  const isCloudWritable = isEdgeAuthenticated || isGitHubConnected;
+  const isPublicReadOnly = Boolean(publicArchive) && !isCloudWritable;
   const canEdit = !isPublicReadOnly;
 
   const commitDraftBatch = useCallback(
@@ -237,7 +261,12 @@ export function App() {
         let githubPath: string | undefined;
         let githubSha: string | undefined;
 
-        if (isGitHubConnected) {
+        if (isEdgeAuthenticated) {
+          const uploaded = await uploadImageViaEdge(id, entry.draft.processed.base64Content);
+          imageUrl = uploaded.remoteUrl;
+          githubPath = uploaded.githubPath;
+          githubSha = uploaded.githubSha;
+        } else if (isGitHubConnected) {
           const uploaded = await uploadImageToGitHub(githubConfig, id, entry.draft.processed.base64Content);
           imageUrl = uploaded.remoteUrl;
           githubPath = uploaded.githubPath;
@@ -275,7 +304,14 @@ export function App() {
         setPhotos(nextList);
       });
 
-      if (isGitHubConnected) {
+      if (isEdgeAuthenticated) {
+        await syncGalleryIndexViaEdge(nextList);
+        showToast(
+          createdPhotos.length > 1
+            ? `已一键上传 ${createdPhotos.length} 张作品至你的云端展馆！`
+            : `已压制 WebP (${createdPhotos[0].sizeKB} KB) 并同步至云端`
+        );
+      } else if (isGitHubConnected) {
         await syncGalleryIndexToGitHub(githubConfig, nextList);
         showToast(
           createdPhotos.length > 1
@@ -290,13 +326,17 @@ export function App() {
         );
       }
     },
-    [githubConfig, isGitHubConnected, photos, showToast]
+    [githubConfig, isEdgeAuthenticated, isGitHubConnected, photos, showToast]
   );
 
   const ingestImageFiles = useCallback(
     async (files: File[]) => {
       if (!canEdit) {
-        showToast('请先点右上角「策展登录」填写 GitHub Token，再上传照片');
+        showToast(
+          edgeStatus.edgeMode
+            ? '请先点右上角「策展登录」输入策展口令'
+            : '请先点右上角「策展登录」完成认证，再上传照片'
+        );
         githubDialogRef.current?.showModal();
         return;
       }
@@ -359,7 +399,7 @@ export function App() {
         uploadDialogRef.current.showModal();
       }
     },
-    [canEdit, commitDraftBatch, instantUpload, selectedSubject, showToast]
+    [canEdit, commitDraftBatch, edgeStatus.edgeMode, instantUpload, selectedSubject, showToast]
   );
 
   // Global Ctrl+V / Cmd+V paste upload
@@ -419,7 +459,10 @@ export function App() {
 
   const handleDeletePhoto = async (photo: PhotoItem) => {
     try {
-      if (photo.githubPath && isGitHubConnected) {
+      if (photo.githubPath && isEdgeAuthenticated) {
+        showToast('正在删除云端 WebP 文件并更新索引...');
+        await deleteImageViaEdge(photo.githubPath, photo.githubSha);
+      } else if (photo.githubPath && isGitHubConnected) {
         showToast('正在删除云端 WebP 文件并更新索引...');
         await deleteImageFromGitHub(githubConfig, photo.githubPath, photo.githubSha);
       }
@@ -435,7 +478,9 @@ export function App() {
         setPhotos(nextList);
       });
 
-      if (isGitHubConnected && !photo.isSample) {
+      if (isEdgeAuthenticated && !photo.isSample) {
+        await syncGalleryIndexViaEdge(nextList);
+      } else if (isGitHubConnected && !photo.isSample) {
         await syncGalleryIndexToGitHub(githubConfig, nextList);
       }
       showToast(`已淘汰「${photo.title}」，释放 ${photo.sizeKB} KB`);
@@ -450,7 +495,9 @@ export function App() {
     setPhotos(nextList);
     setActivePhoto(updated);
 
-    if (isGitHubConnected && !updated.isSample) {
+    if (isEdgeAuthenticated && !updated.isSample) {
+      await syncGalleryIndexViaEdge(nextList);
+    } else if (isGitHubConnected && !updated.isSample) {
       await syncGalleryIndexToGitHub(githubConfig, nextList);
     }
     showToast('已更新审美拆解笔记与标签');
@@ -736,6 +783,7 @@ export function App() {
             <button
               type="button"
               onClick={() => githubDialogRef.current?.showModal()}
+              aria-label={isCloudWritable ? '策展权限已解锁' : isPublicReadOnly ? '策展登录' : '云同步'}
               className="flex h-8 items-center gap-1.5 border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs text-[var(--ink-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
             >
               {isPublicReadOnly ? (
@@ -744,18 +792,41 @@ export function App() {
                 <span
                   aria-hidden="true"
                   className={`h-1.5 w-1.5 rounded-full ${
-                    isGitHubConnected ? 'bg-emerald-500' : 'bg-[var(--ink-muted)]'
+                    isCloudWritable ? 'bg-emerald-500' : 'bg-[var(--ink-muted)]'
                   }`}
                 />
               )}
               <span className="hidden sm:inline">
-                {isGitHubConnected ? '策展中' : isPublicReadOnly ? '策展登录' : '云同步'}
+                {isCloudWritable ? '策展中' : isPublicReadOnly ? '策展登录' : '云同步'}
               </span>
             </button>
 
-            {/* Primary Upload Trigger (only shown when editable) */}
+            {/* Primary Upload & Mobile Camera Triggers (only shown when editable) */}
             {canEdit && (
               <>
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const picked = Array.from(e.target.files || []);
+                    if (picked.length > 0) {
+                      await ingestImageFiles(picked);
+                      e.target.value = '';
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => cameraInputRef.current?.click()}
+                  aria-label="手机拍照直传"
+                  title="拍照直传"
+                  className="flex h-8 items-center justify-center border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs text-[var(--ink-primary)] transition hover:border-[var(--border-strong)] sm:hidden"
+                >
+                  <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -1188,7 +1259,7 @@ export function App() {
         dialogRef={uploadDialogRef}
         queue={uploadQueue}
         defaultSubject={selectedSubject === 'all' ? 'humanities' : selectedSubject}
-        isGitHubConnected={isGitHubConnected}
+        isGitHubConnected={isCloudWritable}
         instantUpload={instantUpload}
         onToggleInstantUpload={(enabled) => {
           setInstantUpload(enabled);
@@ -1211,6 +1282,28 @@ export function App() {
         dialogRef={githubDialogRef}
         config={githubConfig}
         publicArchive={publicArchive}
+        edgeStatus={edgeStatus}
+        onEdgeLogin={async (passcode) => {
+          await loginEdgeCurator(passcode);
+          const nextEdge = await checkEdgeStatus();
+          setEdgeStatus(nextEdge);
+          const latest = await fetchEdgeGallery();
+          if (latest.length > 0) {
+            runViewTransition(() => setPhotos(latest));
+          }
+          showToast('已解锁策展模式（30 天内免再次输入口令）');
+        }}
+        onEdgeLogout={async () => {
+          await logoutEdgeCurator();
+          setEdgeStatus((prev) => ({ ...prev, authenticated: false }));
+          showToast('已切换回访客只读模式');
+        }}
+        onRefreshGallery={async () => {
+          const latest = await fetchEdgeGallery();
+          if (latest.length > 0) {
+            runViewTransition(() => setPhotos(latest));
+          }
+        }}
         onSaveConfig={(next) => {
           setGithubConfig(next);
           saveGitHubConfig(next);

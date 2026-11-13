@@ -741,3 +741,106 @@ export async function pullGalleryIndexFromGitHub(config: GitHubConfig): Promise<
   }
   return remoteItems;
 }
+
+export interface EdgeStatus {
+  edgeMode: boolean;
+  authenticated: boolean;
+  target?: PublicArchiveConfig | null;
+}
+
+export async function checkEdgeStatus(): Promise<EdgeStatus> {
+  try {
+    const res = await fetch('/api/status', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout?.(2500),
+    });
+    if (!res.ok) return { edgeMode: false, authenticated: false };
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) return { edgeMode: false, authenticated: false };
+    const data = (await res.json()) as Partial<EdgeStatus>;
+    return {
+      edgeMode: Boolean(data.edgeMode),
+      authenticated: Boolean(data.authenticated),
+      target: data.target ?? null,
+    };
+  } catch {
+    return { edgeMode: false, authenticated: false };
+  }
+}
+
+export async function loginEdgeCurator(passcode: string): Promise<void> {
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ passcode }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `口令校验失败 (${res.status})`);
+  }
+}
+
+export async function logoutEdgeCurator(): Promise<void> {
+  await fetch('/api/logout', { method: 'POST' }).catch(() => {});
+}
+
+export async function fetchEdgeGallery(): Promise<PhotoItem[]> {
+  const res = await fetch('/api/gallery', { cache: 'no-store' });
+  if (!res.ok) return [];
+  const data = (await res.json()) as { items?: PhotoItem[] };
+  return Array.isArray(data.items)
+    ? data.items.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    : [];
+}
+
+export async function uploadImageViaEdge(
+  photoId: string,
+  base64Content: string
+): Promise<{ githubPath: string; githubSha: string; remoteUrl: string }> {
+  const res = await fetch('/api/upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ photoId, base64Content }),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    githubPath?: string;
+    githubSha?: string;
+    remoteUrl?: string;
+    error?: string;
+  };
+  if (!res.ok || !data.githubPath || !data.remoteUrl) {
+    throw new Error(data.error || `云端上传失败 (${res.status})`);
+  }
+  return {
+    githubPath: data.githubPath,
+    githubSha: data.githubSha || '',
+    remoteUrl: data.remoteUrl,
+  };
+}
+
+export async function syncGalleryIndexViaEdge(photos: PhotoItem[]): Promise<void> {
+  const cleanIndex = photos.filter((p) => !p.isSample);
+  const res = await fetch('/api/index', {
+    method: 'PUT',
+    priority: 'low',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: cleanIndex }),
+  } as RequestInit);
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || `同步索引失败 (${res.status})`);
+  }
+}
+
+export async function deleteImageViaEdge(githubPath: string, githubSha?: string): Promise<void> {
+  const res = await fetch('/api/photo', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ githubPath, githubSha }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || `删除云端文件失败 (${res.status})`);
+  }
+}
+
