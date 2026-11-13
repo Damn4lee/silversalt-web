@@ -1,0 +1,327 @@
+@import "tailwindcss";
+
+:root {
+  /* Light tokens (Archival Cotton Paper) */
+  --bg-canvas-light: #f4f1ea;
+  --bg-surface-light: #ebe7de;
+  --bg-elevated-light: #fcfbf8;
+  --ink-primary-light: #181715;
+  --ink-secondary-light: #5c574f;
+  --ink-muted-light: #8c857b;
+  --border-subtle-light: rgba(24, 23, 21, 0.09);
+  --border-strong-light: rgba(24, 23, 21, 0.22);
+  --accent-light: #785832;
+  --accent-soft-light: rgba(120, 88, 50, 0.11);
+  --accent-ink-light: #fcfbf8;
+  --danger-light: #b43c2e;
+  --scrollbar-track-light: #e7e2d8;
+  --scrollbar-thumb-light: #9e9689;
+
+  /* Dark tokens (Darkroom Obsidian) */
+  --bg-canvas-dark: #0c0c0d;
+  --bg-surface-dark: #141416;
+  --bg-elevated-dark: #1a1a1d;
+  --ink-primary-dark: #ece9e2;
+  --ink-secondary-dark: #9c978f;
+  --ink-muted-dark: #635f59;
+  --border-subtle-dark: rgba(236, 233, 226, 0.08);
+  --border-strong-dark: rgba(236, 233, 226, 0.2);
+  --accent-dark: #d2b48c;
+  --accent-soft-dark: rgba(210, 180, 140, 0.13);
+  --accent-ink-dark: #11100e;
+  --danger-dark: #e06b5c;
+  --scrollbar-track-dark: #161618;
+  --scrollbar-thumb-dark: #57544f;
+
+  /* Base light fallback for browsers without light-dark() */
+  --bg-canvas: var(--bg-canvas-light);
+  --bg-surface: var(--bg-surface-light);
+  --bg-elevated: var(--bg-elevated-light);
+  --ink-primary: var(--ink-primary-light);
+  --ink-secondary: var(--ink-secondary-light);
+  --ink-muted: var(--ink-muted-light);
+  --border-subtle: var(--border-subtle-light);
+  --border-strong: var(--border-strong-light);
+  --accent: var(--accent-light);
+  --accent-soft: var(--accent-soft-light);
+  --accent-ink: var(--accent-ink-light);
+  --danger: var(--danger-light);
+  --scrollbar-track: var(--scrollbar-track-light);
+  --scrollbar-thumb: var(--scrollbar-thumb-light);
+
+  @media (prefers-color-scheme: dark) {
+    --bg-canvas: var(--bg-canvas-dark);
+    --bg-surface: var(--bg-surface-dark);
+    --bg-elevated: var(--bg-elevated-dark);
+    --ink-primary: var(--ink-primary-dark);
+    --ink-secondary: var(--ink-secondary-dark);
+    --ink-muted: var(--ink-muted-dark);
+    --border-subtle: var(--border-subtle-dark);
+    --border-strong: var(--border-strong-dark);
+    --accent: var(--accent-dark);
+    --accent-soft: var(--accent-soft-dark);
+    --accent-ink: var(--accent-ink-dark);
+    --danger: var(--danger-dark);
+    --scrollbar-track: var(--scrollbar-track-dark);
+    --scrollbar-thumb: var(--scrollbar-thumb-dark);
+  }
+
+  @supports (color: light-dark(white, black)) {
+    --bg-canvas: light-dark(var(--bg-canvas-light), var(--bg-canvas-dark));
+    --bg-surface: light-dark(var(--bg-surface-light), var(--bg-surface-dark));
+    --bg-elevated: light-dark(var(--bg-elevated-light), var(--bg-elevated-dark));
+    --ink-primary: light-dark(var(--ink-primary-light), var(--ink-primary-dark));
+    --ink-secondary: light-dark(var(--ink-secondary-light), var(--ink-secondary-dark));
+    --ink-muted: light-dark(var(--ink-muted-light), var(--ink-muted-dark));
+    --border-subtle: light-dark(var(--border-subtle-light), var(--border-subtle-dark));
+    --border-strong: light-dark(var(--border-strong-light), var(--border-strong-dark));
+    --accent: light-dark(var(--accent-light), var(--accent-dark));
+    --accent-soft: light-dark(var(--accent-soft-light), var(--accent-soft-dark));
+    --accent-ink: light-dark(var(--accent-ink-light), var(--accent-ink-dark));
+    --danger: light-dark(var(--danger-light), var(--danger-dark));
+    --scrollbar-track: light-dark(var(--scrollbar-track-light), var(--scrollbar-track-dark));
+    --scrollbar-thumb: light-dark(var(--scrollbar-thumb-light), var(--scrollbar-thumb-dark));
+  }
+
+  color-scheme: light dark;
+  accent-color: var(--accent);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+
+  &:has(> head > meta[name="color-scheme"][content="dark"]) {
+    color-scheme: dark;
+  }
+  &:has(> head > meta[name="color-scheme"][content="light"]) {
+    color-scheme: light;
+  }
+
+  /* Disable root full-screen snapshot during card-level View Transitions */
+  view-transition-name: none;
+
+  /* Scroll direction container for auto-hiding top bar */
+  container-type: scroll-state;
+
+  --font-serif: 'Newsreader', 'Noto Serif SC', 'Songti SC', 'STSong', Georgia, serif;
+  --font-sans: 'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Fallback for browsers without light-dark() when manual meta override is active */
+@supports not (color: light-dark(white, black)) {
+  :root:has(> head > meta[name="color-scheme"][content="light"]) {
+    --bg-canvas: var(--bg-canvas-light);
+    --bg-surface: var(--bg-surface-light);
+    --bg-elevated: var(--bg-elevated-light);
+    --ink-primary: var(--ink-primary-light);
+    --ink-secondary: var(--ink-secondary-light);
+    --ink-muted: var(--ink-muted-light);
+    --border-subtle: var(--border-subtle-light);
+    --border-strong: var(--border-strong-light);
+    --accent: var(--accent-light);
+    --accent-soft: var(--accent-soft-light);
+    --accent-ink: var(--accent-ink-light);
+    --danger: var(--danger-light);
+  }
+  :root:has(> head > meta[name="color-scheme"][content="dark"]) {
+    --bg-canvas: var(--bg-canvas-dark);
+    --bg-surface: var(--bg-surface-dark);
+    --bg-elevated: var(--bg-elevated-dark);
+    --ink-primary: var(--ink-primary-dark);
+    --ink-secondary: var(--ink-secondary-dark);
+    --ink-muted: var(--ink-muted-dark);
+    --border-subtle: var(--border-subtle-dark);
+    --border-strong: var(--border-strong-dark);
+    --accent: var(--accent-dark);
+    --accent-soft: var(--accent-soft-dark);
+    --accent-ink: var(--accent-ink-dark);
+    --danger: var(--danger-dark);
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --bg-canvas: Canvas;
+    --bg-surface: Canvas;
+    --bg-elevated: Canvas;
+    --ink-primary: CanvasText;
+    --ink-secondary: CanvasText;
+    --ink-muted: GrayText;
+    --border-subtle: ButtonBorder;
+    --border-strong: CanvasText;
+    --accent: Highlight;
+    --accent-ink: HighlightText;
+  }
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-canvas);
+  color: var(--ink-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-editorial {
+  font-family: var(--font-serif);
+}
+
+.font-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbar fallback for older WebKit browsers */
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+  }
+}
+
+/* Sticky top bar with scroll-state auto-hide & JS fallback */
+.top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.2s ease;
+}
+
+@container scroll-state((scrolled: bottom) and (scrollable: top)) {
+  .top-bar:not(:focus-within) {
+    transform: translateY(-100%);
+  }
+}
+
+.top-bar.is-hidden:not(:focus-within) {
+  transform: translateY(-100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .top-bar {
+    transition: none;
+  }
+}
+
+/* Modal dialog scroll containment (non-scrollable + scrollable backdrop) */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: rgba(8, 8, 10, 0);
+  transition-property: background-color, display, overlay;
+  transition-duration: 0.22s;
+  transition-timing-function: ease-out;
+  transition-behavior: allow-discrete;
+}
+
+/* Top-layer animations with Firefox/Safari exit fallback via :where(:not([data-closing])) */
+dialog,
+[popover] {
+  opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: 0.22s;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  transition-behavior: allow-discrete;
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+:is(dialog[open], [popover]:is(:popover-open, .\:popover-open)):where(:not([data-closing])) {
+  opacity: 1;
+
+  @starting-style {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: translateY(0) scale(1);
+
+    @starting-style {
+      transform: translateY(6px) scale(0.985);
+    }
+  }
+
+  &::backdrop {
+    background-color: rgba(8, 8, 10, 0.78);
+    backdrop-filter: blur(8px);
+
+    @starting-style {
+      background-color: rgba(8, 8, 10, 0);
+    }
+  }
+}
+
+/* Polyfill fallback styling for popover */
+[popover]:is(:popover-open, .\:popover-open) {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog,
+  [popover],
+  dialog::backdrop {
+    transition-duration: 0.08s;
+  }
+}
+
+/* Interactive card stretched-button pattern */
+.photo-card {
+  position: relative;
+  view-transition-class: gallery-card;
+}
+
+.photo-card .card-primary-trigger::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.photo-card .card-secondary-action {
+  position: relative;
+  z-index: 1;
+}
+
+.photo-card:has(.card-primary-trigger:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* View Transitions for smooth gallery filtering & removal */
+::view-transition {
+  pointer-events: none;
+}
+
+::view-transition-group(.gallery-card) {
+  animation-duration: 0.32s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* Multi-line clamp per css-layout guide */
+.line-clamp-editorial {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-clamp: 2;
+  overflow: clip;
+}
