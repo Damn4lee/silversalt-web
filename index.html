@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <script>
+      try {
+        var savedScheme = localStorage.getItem('color-scheme');
+        if (savedScheme === 'light' || savedScheme === 'dark') {
+          document.querySelector('meta[name="color-scheme"]').content = savedScheme;
+        }
+      } catch (e) {}
+    </script>
+    <title>暗房志 · 个人摄影审美积累库</title>
+    <script type="module" crossorigin src="./assets/index-JMB7JbvG.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DjlkH_pZ.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
